@@ -243,12 +243,24 @@ namespace HpThermal
         readonly Label hpProcLabel = new Label();
         readonly Button killButton = new Button();
         readonly Timer verifyTimer = new Timer();
+        readonly Timer trayClickTimer = new Timer();
+        readonly NotifyIcon trayIcon = new NotifyIcon();
+        readonly ContextMenuStrip trayMenu = new ContextMenuStrip();
+        readonly Dictionary<Mode, ToolStripMenuItem> trayModes = new Dictionary<Mode, ToolStripMenuItem>();
+        ToolStripMenuItem trayCurrent;
+        ToolStripMenuItem trayPower;
+        bool showWindow;
+        bool exiting;
+        long ignoreTrayClickUntil;
         Mode pendingMode;
         readonly Dictionary<Mode, RadioButton> radios = new Dictionary<Mode, RadioButton>();
         List<ModeInfo> supported;
 
-        public MainForm()
+        public MainForm() : this(false) { }
+
+        public MainForm(bool showOnStart)
         {
+            showWindow = showOnStart;
             Text = "HP 시스템 관리 모드 선택";
             Font = new Font("Malgun Gothic", 9F);
             StartPosition = FormStartPosition.CenterScreen;
@@ -343,13 +355,134 @@ namespace HpThermal
             if (supported == null)
                 SetStatus("지원 모드 정보를 읽지 못해 모든 모드를 표시합니다.", false);
 
-            Shown += delegate { RefreshCurrent(); };
+            InitializeTray();
+            RefreshCurrent();
+        }
+
+        // Application.Run(form)의 최초 Show 요청도 막아 트레이 전용으로 시작합니다.
+        protected override void SetVisibleCore(bool value)
+        {
+            base.SetVisibleCore(value && showWindow);
+        }
+
+        void InitializeTray()
+        {
+            trayCurrent = new ToolStripMenuItem("현재 상태: 확인 중...");
+            trayCurrent.Enabled = false;
+            trayMenu.Items.Add(trayCurrent);
+            trayMenu.Items.Add(new ToolStripSeparator());
+            foreach (ModeInfo info in Modes.All)
+            {
+                if (supported != null && !supported.Contains(info)) continue;
+                ModeInfo selected = info;
+                ToolStripMenuItem item = new ToolStripMenuItem(Modes.DisplayName(info.Mode, supported));
+                item.ToolTipText = info.Description;
+                item.Click += delegate { ApplyMode(selected); };
+                trayModes.Add(info.Mode, item);
+                trayMenu.Items.Add(item);
+            }
+            trayMenu.Items.Add(new ToolStripSeparator());
+            trayPower = new ToolStripMenuItem("Windows 전원 모드도 함께 변경");
+            trayPower.CheckOnClick = true;
+            trayPower.CheckedChanged += delegate { powerCheck.Checked = trayPower.Checked; };
+            powerCheck.CheckedChanged += delegate { trayPower.Checked = powerCheck.Checked; };
+            trayMenu.Items.Add(trayPower);
+            trayMenu.Items.Add("GUI 열기", null, delegate { OpenWindow(); });
+            trayMenu.Items.Add("HP 프로세스 종료", null, delegate { KillHp(); });
+            trayMenu.Items.Add(new ToolStripSeparator());
+            trayMenu.Items.Add("종료", null, delegate { exiting = true; Close(); });
+            trayMenu.Opening += delegate { RefreshCurrent(); };
+
+            trayIcon.Icon = SystemIcons.Application;
+            trayIcon.Text = "HP 시스템 관리 모드";
+            trayIcon.ContextMenuStrip = trayMenu;
+            // 더블클릭의 첫 클릭에서 메뉴가 열리지 않도록 잠시 기다립니다.
+            trayClickTimer.Interval = SystemInformation.DoubleClickTime + 50;
+            trayClickTimer.Tick += delegate
+            {
+                trayClickTimer.Stop();
+                if (Stopwatch.GetTimestamp() < ignoreTrayClickUntil) return;
+                trayMenu.Show(Cursor.Position);
+            };
+            trayIcon.MouseClick += delegate(object sender, MouseEventArgs e)
+            {
+                if (e.Button != MouseButtons.Left ||
+                    Stopwatch.GetTimestamp() < ignoreTrayClickUntil) return;
+                trayClickTimer.Stop();
+                trayClickTimer.Start();
+            };
+            trayIcon.MouseDoubleClick += delegate(object sender, MouseEventArgs e)
+            {
+                if (e.Button != MouseButtons.Left) return;
+                OpenWindow();
+            };
+            trayIcon.Visible = true;
+        }
+
+        void OpenWindow()
+        {
+            // 더블클릭 뒤에도 MouseClick이 전달될 수 있으므로 무시합니다.
+            // GUI를 여는 중 WMI 조회가 오래 걸려도 메뉴가 다시 열리지 않게 합니다.
+            ignoreTrayClickUntil = long.MaxValue;
+            trayClickTimer.Stop();
+            trayMenu.Close();
+            showWindow = true;
+            RefreshCurrent();
+            Show();
+            WindowState = FormWindowState.Normal;
+            Activate();
+            ignoreTrayClickUntil = Stopwatch.GetTimestamp() +
+                (long)(Stopwatch.Frequency * (SystemInformation.DoubleClickTime + 50) / 1000.0);
+        }
+
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            if (!exiting && e.CloseReason == CloseReason.UserClosing)
+            {
+                e.Cancel = true;
+                trayClickTimer.Stop();
+                Hide();
+            }
+            base.OnFormClosing(e);
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                verifyTimer.Dispose();
+                trayClickTimer.Dispose();
+                trayIcon.Visible = false;
+                trayIcon.Dispose();
+                trayMenu.Dispose();
+            }
+            base.Dispose(disposing);
+        }
+
+        void UpdateCurrentMode(int value)
+        {
+            Mode mode = (Mode)value;
+            string name = Modes.DisplayName(mode, supported);
+            currentLabel.Text = "현재 상태: " + name;
+            trayCurrent.Text = currentLabel.Text;
+            trayIcon.Text = "HP 시스템 관리: " + name;
+            foreach (KeyValuePair<Mode, ToolStripMenuItem> item in trayModes)
+                item.Value.Checked = item.Key == mode;
+            foreach (KeyValuePair<Mode, RadioButton> item in radios)
+                item.Value.Checked = item.Key == mode;
         }
 
         void SetStatus(string text, bool error)
         {
             statusLabel.ForeColor = error ? Color.Firebrick : Color.DarkGreen;
             statusLabel.Text = text;
+            if (!Visible && trayIcon.Visible)
+            {
+                trayIcon.BalloonTipTitle = "HP 시스템 관리 모드";
+                trayIcon.BalloonTipText = text;
+                trayIcon.BalloonTipIcon = error ? ToolTipIcon.Warning : ToolTipIcon.Info;
+                trayIcon.ShowBalloonTip(3000);
+            }
         }
 
         void UpdateHpProcessLabel()
@@ -375,9 +508,7 @@ namespace HpThermal
             try
             {
                 int now = HpBios.GetMode();
-                currentLabel.Text = "현재 상태: " + Modes.DisplayName((Mode)now, supported);
-                RadioButton rb;
-                if (radios.TryGetValue((Mode)now, out rb)) rb.Checked = true;
+                UpdateCurrentMode(now);
                 if (now != (int)pendingMode)
                     SetStatus("선택한 모드가 HP 프로세스에 의해 다른 값으로 되돌려졌습니다. 아래 \"HP 프로세스 종료\" 후 다시 적용하세요.", true);
             }
@@ -390,16 +521,14 @@ namespace HpThermal
             UpdateHpProcessLabel();
             try
             {
-                int v = HpBios.GetMode();
-                Mode m = (Mode)v;
-                currentLabel.Text = "현재 상태: " + Modes.DisplayName(m, supported);
-                RadioButton rb;
-                if (radios.TryGetValue(m, out rb))
-                    rb.Checked = true;
+                UpdateCurrentMode(HpBios.GetMode());
             }
             catch (Exception ex)
             {
                 currentLabel.Text = "현재 상태: 읽기 실패";
+                trayCurrent.Text = currentLabel.Text;
+                trayIcon.Text = "HP 시스템 관리: 읽기 실패";
+                foreach (ToolStripMenuItem item in trayModes.Values) item.Checked = false;
                 SetStatus(ex.Message, true);
             }
         }
@@ -415,6 +544,12 @@ namespace HpThermal
                 return;
             }
 
+            ApplyMode(selected);
+        }
+
+        void ApplyMode(ModeInfo selected)
+        {
+            verifyTimer.Stop();
             try
             {
                 Cursor = Cursors.WaitCursor;
@@ -427,7 +562,7 @@ namespace HpThermal
                 }
                 System.Threading.Thread.Sleep(300);
                 int now = HpBios.GetMode();
-                currentLabel.Text = "현재 상태: " + Modes.DisplayName((Mode)now, supported);
+                UpdateCurrentMode(now);
                 if (now == (int)selected.Mode)
                 {
                     SetStatus("'" + Modes.DisplayName(selected.Mode, supported) + "' 모드로 변경했습니다." + warn, false);
@@ -500,7 +635,7 @@ namespace HpThermal
                     Print("변경 완료: " + Modes.DisplayName(info.Mode, supported));
                     return 0;
                 }
-                Print("사용법: HpThermalMode.exe [--get | --list | --killhp | --set <모드> [--power]]");
+                Print("사용법: HpThermalMode.exe [--tray | --gui | --get | --list | --killhp | --set <모드> [--power]]");
                 return 1;
             }
             catch (Exception ex)
@@ -513,14 +648,17 @@ namespace HpThermal
         [STAThread]
         static int Main(string[] args)
         {
-            if (args.Length > 0)
+            bool gui = args.Length == 1 && args[0].Equals("--gui", StringComparison.OrdinalIgnoreCase);
+            bool tray = args.Length == 1 && args[0].Equals("--tray", StringComparison.OrdinalIgnoreCase);
+            if (args.Length > 0 && !gui && !tray)
                 return RunCli(args);
 
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             try
             {
-                Application.Run(new MainForm());
+                using (MainForm form = new MainForm(gui))
+                    Application.Run(form);
             }
             catch (Exception ex)
             {

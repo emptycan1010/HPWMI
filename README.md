@@ -8,7 +8,16 @@ HP OmniBook Ultra Flip 14 의 "시스템 관리(성능 제어)" 모드를 myHP �
 myHP 의 `HP.SystemControl` 이 사용하는 것과 같은 BIOS WMI 호출(`root\wmi:hpqBIntM`, CommandType `0x4C`)을 사용합니다.
 
 ## 실행
-`HpThermalMode.exe` 실행 → 모드 선택 → **적용** (관리자 권한 필요, UAC 창이 뜹니다)
+`HpThermalMode.exe`를 실행하면 창 없이 작업표시줄 알림 영역(트레이)에 상주합니다. 관리자 권한이 필요하며 실행 시 UAC 창이 뜹니다.
+
+- **왼쪽 한 번 클릭 / 오른쪽 클릭**: 모드 선택 메뉴를 열고, 원하는 모드를 누르면 바로 적용합니다. 현재 BIOS 모드는 체크 표시됩니다.
+- **왼쪽 더블클릭**: 기존 GUI 창을 엽니다.
+- **GUI의 X 버튼**: 프로그램을 종료하지 않고 트레이로 숨깁니다.
+- **트레이 메뉴 → 종료**: 프로그램을 완전히 종료합니다.
+- 트레이 아이콘이 안 보이면 작업표시줄의 숨겨진 아이콘(`^`) 영역을 확인하세요.
+
+GUI로 바로 시작하려면 `HpThermalMode.exe --gui`를 사용하세요. 트레이 실행 자체는 모드를 변경하지 않습니다.
+로그온 시 자동 실행하려면 작업 스케줄러에서 **로그온할 때 / 가장 높은 수준의 권한으로 실행 / 사용자가 로그온할 때만 실행**으로 이 실행 파일을 등록하세요. 자동 시작 작업은 프로그램이 직접 등록하지 않습니다.
 
 ## 모드 값
 | BIOS 값 | 모드 |
@@ -27,6 +36,8 @@ Smart Sense 일 때는 BIOS 가 상황에 따라 선택한 실제 모드를 보�
 ```
 HpThermalMode.exe --get
 HpThermalMode.exe --list
+HpThermalMode.exe --tray                (트레이로 시작, 인수 없이 실행해도 동일)
+HpThermalMode.exe --gui                 (GUI 창을 열고 시작)
 HpThermalMode.exe --set silent          (smartsense, balanced, cool, silent, powersaver, performance)
 HpThermalMode.exe --set performance --power   (Windows 전원 모드도 같이 변경)
 HpThermalMode.exe --killhp              (HP.SystemControl.Background 종료)
